@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>CONEMO 測定</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic UI','Yu Gothic',sans-serif;margin:0;background:#F4F9FD;color:#1A3A5C}
+.box{max-width:520px;margin:18vh auto 0;padding:24px;text-align:center;line-height:1.8;font-size:15px}
+.spin{width:36px;height:36px;margin:0 auto 14px;border:4px solid #E0EEF7;border-top-color:#3E98BB;border-radius:50%;animation:r 1s linear infinite}
+@keyframes r{to{transform:rotate(360deg)}}
+.btn{display:inline-block;margin-top:12px;background:#3E98BB;color:#fff;border:0;padding:11px 20px;border-radius:999px;font:inherit;font-weight:700;cursor:pointer}
+small{color:#5B8DB8}
+</style>
+</head>
+<body>
+<div class="box" id="box"><div class="spin"></div><p>読み込んでいます…</p></div>
+<script>
+// CONEMO コーチ用ページの入口。
+// 中身は Apps Script（コネモ測定表）から、Google のログイン情報を付けずに取ってきて表示する。
+// こうすると、ブラウザが Google の複数アカウントや職場のアカウントにログインしていても開ける。
+(function () {
+  var API = 'https://script.google.com/macros/s/AKfycbwjXLO7kiKY4qahW8ZPmulBs_YhWXrSKz9iu84WtvSDunQ5coh4D_rGa-LsrLsyMoAZzg/exec';
+  var box = document.getElementById('box');
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; }); }
+  function fail(msg) { box.innerHTML = '<p>' + msg + '</p><button class="btn" onclick="location.reload()">もう一度読み込む</button>'; }
+
+  // ?key= で開かれたら # の後ろに移す（合言葉をサーバーに送らない）
+  if (/[?&]key=/.test(location.search)) history.replaceState(null, '', location.pathname + '#' + location.search.slice(1));
+  var q = new URLSearchParams(location.hash.slice(1));
+  if (!q.get('key')) { box.innerHTML = '<p>コーチ用のリンクから開いてください。</p>'; return; }
+
+  var params = new URLSearchParams({ api: '1', front: location.origin + location.pathname });
+  ['key', 'date', 'view', 'name'].forEach(function (k) { if (q.get(k)) params.set(k, q.get(k)); });
+
+  fetch(API + '?' + params.toString(), { credentials: 'omit', cache: 'no-store' })
+    .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function (d) {
+      if (!d.ok) { box.innerHTML = '<p>' + esc(d.error) + '</p>'; return; }
+      var head = '<script>(' + shim.toString() + ')(' + JSON.stringify(API) + ');<\/script>' +
+        (d.mobile ? '<meta name="viewport" content="width=device-width, initial-scale=1">' : '');
+      var html = /<head[^>]*>/i.test(d.html) ? d.html.replace(/<head[^>]*>/i, function (m) { return m + head; }) : head + d.html;
+      document.open();
+      document.write(html);
+      document.close();
+      document.title = d.title;
+    })
+    .catch(function (e) { fail('読み込めませんでした。電波を確認して、もう一度お試しください。<br><small>' + esc(e.message) + '</small>'); });
+
+  // 書き出したページの中で動く部品：google.script.run の代わり（保存・名前の追加）と、ページ内の移動
+  function shim(API) {
+    function runner(ok, ng) {
+      return new Proxy({}, { get: function (_, fn) {
+        if (fn === 'withSuccessHandler') return function (f) { return runner(f, ng); };
+        if (fn === 'withFailureHandler') return function (f) { return runner(ok, f); };
+        return function () {
+          var args = Array.prototype.slice.call(arguments);
+          fetch(API, { method: 'POST', credentials: 'omit', body: JSON.stringify({ fn: fn, args: args }) })
+            .then(function (r) { return r.json(); })
+            .then(function (d) { if (d.ok) { if (ok) ok(d.result); } else if (ng) ng(new Error(d.error)); })
+            .catch(function () { if (ng) ng(new Error('通信できませんでした。電波を確認してもう一度押してください')); });
+        };
+      } });
+    }
+    window.google = { script: { run: runner(null, null) } };
+    window.addEventListener('hashchange', function () { location.reload(); });
+  }
+})();
+</script>
+</body>
+</html>
