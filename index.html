@@ -21,11 +21,15 @@ small{color:#5B8DB8}
 // CONEMO コーチ用ページの入口。
 // 中身は Apps Script（コネモ測定表）から、Google のログイン情報を付けずに取ってきて表示する。
 // こうすると、ブラウザが Google の複数アカウントや職場のアカウントにログインしていても開ける。
+// 電波がないときは、このスマホで前に開いた同じ画面を出す（入力した数字はスマホに残り、電波が戻ると送られる）。
 (function () {
   var API = 'https://script.google.com/macros/s/AKfycbwjXLO7kiKY4qahW8ZPmulBs_YhWXrSKz9iu84WtvSDunQ5coh4D_rGa-LsrLsyMoAZzg/exec';
   var box = document.getElementById('box');
   function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return '&#' + c.charCodeAt(0) + ';'; }); }
   function fail(msg) { box.innerHTML = '<p>' + msg + '</p><button class="btn" onclick="location.reload()">もう一度読み込む</button>'; }
+
+  // 電波がなくてもこのページ自体を開けるように（測定のデータはここには保存しない）
+  if ('serviceWorker' in navigator) { try { navigator.serviceWorker.register('sw.js').catch(function () {}); } catch (e) { /* 使えないブラウザ */ } }
 
   // ?key= で開かれたら # の後ろに移す（合言葉をサーバーに送らない）
   if (/[?&]key=/.test(location.search)) history.replaceState(null, '', location.pathname + '#' + location.search.slice(1));
@@ -33,23 +37,55 @@ small{color:#5B8DB8}
   if (!q.get('key')) { box.innerHTML = '<p>コーチ用のリンクから開いてください。</p>'; return; }
 
   var params = new URLSearchParams({ api: '1', front: location.origin + location.pathname });
-  ['key', 'date', 'view', 'name'].forEach(function (k) { if (q.get(k)) params.set(k, q.get(k)); });
+  var names = ['key', 'date', 'view', 'name', 'sport'];
+  names.forEach(function (k) { if (q.get(k)) params.set(k, q.get(k)); });
+
+  // 前に開いた画面の控え（画面ごとに1つ、新しい順に12画面まで）
+  var CK = 'conemo:page:' + names.map(function (k) { return q.get(k) || ''; }).join('|');
+  function cacheGet() { try { return JSON.parse(localStorage.getItem(CK) || 'null'); } catch (e) { return null; } }
+  function cachePut(d) {
+    try {
+      var list = JSON.parse(localStorage.getItem('conemo:pages') || '[]').filter(function (k) { return k !== CK; });
+      list.unshift(CK);
+      list.slice(12).forEach(function (k) { localStorage.removeItem(k); });
+      localStorage.setItem('conemo:pages', JSON.stringify(list.slice(0, 12)));
+      localStorage.setItem(CK, JSON.stringify({ at: Date.now(), d: d }));
+    } catch (e) { /* 容量が足りないときは控えなしで続ける */ }
+  }
+
+  function render(d, note) {
+    var head = '<script>(' + shim.toString() + ')(' + JSON.stringify(API) + ');<\/script>' +
+      (d.mobile ? '<meta name="viewport" content="width=device-width, initial-scale=1">' : '');
+    var html = /<head[^>]*>/i.test(d.html) ? d.html.replace(/<head[^>]*>/i, function (m) { return m + head; }) : head + d.html;
+    if (note) {
+      var bar = '<div style="background:#FFF4D6;color:#8A5F00;font:700 13px/1.6 sans-serif;padding:8px 14px">' + note + '</div>';
+      html = /<body[^>]*>/i.test(html) ? html.replace(/<body[^>]*>/i, function (m) { return m + bar; }) : bar + html;
+    }
+    document.open();
+    document.write(html);
+    document.close();
+    document.title = d.title;
+  }
 
   fetch(API + '?' + params.toString(), { credentials: 'omit', cache: 'no-store' })
     .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(function (d) {
       if (!d.ok) { box.innerHTML = '<p>' + esc(d.error) + '</p>'; return; }
-      var head = '<script>(' + shim.toString() + ')(' + JSON.stringify(API) + ');<\/script>' +
-        (d.mobile ? '<meta name="viewport" content="width=device-width, initial-scale=1">' : '');
-      var html = /<head[^>]*>/i.test(d.html) ? d.html.replace(/<head[^>]*>/i, function (m) { return m + head; }) : head + d.html;
-      document.open();
-      document.write(html);
-      document.close();
-      document.title = d.title;
+      cachePut(d);
+      render(d);
     })
-    .catch(function (e) { fail('読み込めませんでした。電波を確認して、もう一度お試しください。<br><small>' + esc(e.message) + '</small>'); });
+    .catch(function (e) {
+      var c = cacheGet();
+      if (c && c.d) {
+        var t = new Date(c.at);
+        render(c.d, '電波がないため、' + (t.getMonth() + 1) + '/' + t.getDate() + ' ' + t.getHours() + ':' + ('0' + t.getMinutes()).slice(-2) +
+          ' に開いたときの画面です。入れた数字はスマホに残り、電波が戻ると自動で送られます。');
+        return;
+      }
+      fail('読み込めませんでした。電波を確認して、もう一度お試しください。<br><small>' + esc(e.message) + '</small>');
+    });
 
-  // 書き出したページの中で動く部品：google.script.run の代わり（保存・名前の追加）と、ページ内の移動
+  // 書き出したページの中で動く部品：google.script.run の代わり（記録の保存・コメント保存・名前の追加）と、ページ内の移動
   function shim(API) {
     function runner(ok, ng) {
       return new Proxy({}, { get: function (_, fn) {
