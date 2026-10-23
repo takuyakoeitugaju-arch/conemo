@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
+<link rel="preconnect" href="https://script.google.com">
+<link rel="preconnect" href="https://script.googleusercontent.com">
 <title>CONEMO 測定</title>
 <style>
 body{font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Yu Gothic UI','Yu Gothic',sans-serif;margin:0;background:#F4F9FD;color:#1A3A5C}
@@ -21,7 +23,8 @@ small{color:#5B8DB8}
 // CONEMO コーチ用ページの入口。
 // 中身は Apps Script（コネモ測定表）から、Google のログイン情報を付けずに取ってきて表示する。
 // こうすると、ブラウザが Google の複数アカウントや職場のアカウントにログインしていても開ける。
-// 電波がないときは、このスマホで前に開いた同じ画面を出す（入力した数字はスマホに残り、電波が戻ると送られる）。
+// 速く見せるため、このスマホで前に開いた同じ画面をすぐ出し、裏で最新を取って、まだ触っていなければ差し替える。
+// 電波がないときは前の画面のまま（入力した数字はスマホに残り、電波が戻ると送られる）。トップでは今日の8種目を裏で先に読んでおく。
 (function () {
   var API = 'https://script.google.com/macros/s/AKfycbwjXLO7kiKY4qahW8ZPmulBs_YhWXrSKz9iu84WtvSDunQ5coh4D_rGa-LsrLsyMoAZzg/exec';
   var box = document.getElementById('box');
@@ -47,8 +50,8 @@ small{color:#5B8DB8}
     try {
       var list = JSON.parse(localStorage.getItem('conemo:pages') || '[]').filter(function (k) { return k !== CK; });
       list.unshift(CK);
-      list.slice(12).forEach(function (k) { localStorage.removeItem(k); });
-      localStorage.setItem('conemo:pages', JSON.stringify(list.slice(0, 12)));
+      list.slice(24).forEach(function (k) { localStorage.removeItem(k); }); // 新しい順に24画面まで
+      localStorage.setItem('conemo:pages', JSON.stringify(list.slice(0, 24)));
       localStorage.setItem(CK, JSON.stringify({ at: Date.now(), d: d }));
     } catch (e) { /* 容量が足りないときは控えなしで続ける */ }
   }
@@ -67,23 +70,70 @@ small{color:#5B8DB8}
     document.title = d.title;
   }
 
+  function note(msg) { // 書き出したあとのページの一番上に、ひとこと出す
+    var bar = document.createElement('div');
+    bar.style.cssText = 'background:#FFF4D6;color:#8A5F00;font:700 13px/1.6 sans-serif;padding:8px 14px';
+    bar.textContent = msg;
+    if (document.body) document.body.insertBefore(bar, document.body.firstChild);
+  }
+  function ago(at) { var t = new Date(at); return (t.getMonth() + 1) + '/' + t.getDate() + ' ' + t.getHours() + ':' + ('0' + t.getMinutes()).slice(-2); }
+
+  var view = q.get('view') || '', isTop = !q.get('date') && !view;
+  var cached = view === 'print' ? null : cacheGet(); // 印刷用は毎回最新を取る
+  var shown = false, touched = false;
+  function watch() { // 画面を触ったら、最新が届いても差し替えない（入力中の画面が入れ替わらないように）
+    touched = false;
+    ['touchstart', 'mousedown', 'keydown', 'input', 'wheel'].forEach(function (ev) { window.addEventListener(ev, function () { touched = true; }, { capture: true, passive: true }); });
+  }
+  // 前の画面は、このページの読み込みが終わってから出す（読み込み中に書き出すと、置き換えではなく書き足しになる）
+  function showCached() { if (shown || !cached || !cached.d) return; render(cached.d); shown = true; watch(); if (isTop) prefetch(); }
+  if (cached && cached.d) { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', showCached); else setTimeout(showCached, 0); }
+
   fetch(API + '?' + params.toString(), { credentials: 'omit', cache: 'no-store' })
     .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(function (d) {
-      if (!d.ok) { box.innerHTML = '<p>' + esc(d.error) + '</p>'; return; }
-      cachePut(d);
-      render(d);
-    })
-    .catch(function (e) {
-      var c = cacheGet();
-      if (c && c.d) {
-        var t = new Date(c.at);
-        render(c.d, '電波がないため、' + (t.getMonth() + 1) + '/' + t.getDate() + ' ' + t.getHours() + ':' + ('0' + t.getMinutes()).slice(-2) +
-          ' に開いたときの画面です。入れた数字はスマホに残り、電波が戻ると自動で送られます。');
+      if (!d.ok) { // 合言葉を作り直したあとの古いリンクなど：前の画面の控えは出さない
+        try { localStorage.removeItem(CK); } catch (e) { /* 無視 */ }
+        if (shown) { document.open(); document.write('<!DOCTYPE html><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><p style="font:15px/1.8 sans-serif;padding:24px">' + esc(d.error) + '</p>'); document.close(); }
+        else box.innerHTML = '<p>' + esc(d.error) + '</p>';
         return;
       }
+      if (view !== 'print') cachePut(d);
+      if (!shown || !touched) { render(d); shown = true; watch(); }
+      if (isTop) prefetch();
+    })
+    .catch(function (e) {
+      if (shown) { note('電波がないため、' + ago(cached.at) + ' に開いたときの画面です。入れた数字はスマホに残り、電波が戻ると自動で送られます。'); return; }
       fail('読み込めませんでした。電波を確認して、もう一度お試しください。<br><small>' + esc(e.message) + '</small>');
     });
+
+  // トップを開いたら、今日の8種目の記録表を裏で読んで控えておく（押した瞬間に出るように。10分に1回まで）
+  function prefetch() {
+    try {
+      if (prefetch.done || navigator.onLine === false) return;
+      prefetch.done = true;
+      var t = new Date(Date.now() + 9 * 3600e3).toISOString(), day = t.slice(2, 4) + '.' + t.slice(5, 7) + '.' + t.slice(8, 10);
+      var last = +localStorage.getItem('conemo:pre:' + day) || 0;
+      if (Date.now() - last < 600e3) return;
+      localStorage.setItem('conemo:pre:' + day, String(Date.now()));
+      var sports = ['幅跳び', '認知判断', '片足バランス', '眼と手', '眼球運動', '空間認識', '周辺視野', '瞬間視記憶'];
+      (function next() {
+        var s = sports.shift(); if (!s) return;
+        var p = new URLSearchParams({ api: '1', front: location.origin + location.pathname, key: q.get('key'), date: day, view: 'entry', sport: s });
+        fetch(API + '?' + p.toString(), { credentials: 'omit', cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
+          if (d && d.ok) {
+            var k = 'conemo:page:' + [q.get('key'), day, 'entry', '', s].join('|'), list = JSON.parse(localStorage.getItem('conemo:pages') || '[]').filter(function (x) { return x !== k; });
+            list.push(k); // 先読みは古い方の端に置く（いっぱいなら、実際に開いた画面ではなく先読みの方をあきらめる）
+            var drop = list.splice(24);
+            drop.forEach(function (x) { localStorage.removeItem(x); });
+            localStorage.setItem('conemo:pages', JSON.stringify(list));
+            if (drop.indexOf(k) < 0) localStorage.setItem(k, JSON.stringify({ at: Date.now(), d: d }));
+          }
+          next();
+        }).catch(function () { /* 先読みは失敗しても困らない */ });
+      })();
+    } catch (e) { /* 先読みは失敗しても困らない */ }
+  }
 
   // 書き出したページの中で動く部品：google.script.run の代わり（記録の保存・コメント保存・名前の追加）と、ページ内の移動
   function shim(API) {
