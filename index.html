@@ -80,20 +80,24 @@ small{color:#5B8DB8}
 
   var view = q.get('view') || '', isTop = !q.get('date') && !view;
   var cached = view === 'print' ? null : cacheGet(); // 印刷用は毎回最新を取る
+  var FRESH = 12 * 3600e3;                           // すぐ出すのは12時間以内に開いた画面だけ（電波がないときは7日前まで）
   var shown = false, touched = false;
   function watch() { // 画面を触ったら、最新が届いても差し替えない（入力中の画面が入れ替わらないように）
     touched = false;
     ['touchstart', 'mousedown', 'keydown', 'input', 'wheel'].forEach(function (ev) { window.addEventListener(ev, function () { touched = true; }, { capture: true, passive: true }); });
   }
   // 前の画面は、このページの読み込みが終わってから出す（読み込み中に書き出すと、置き換えではなく書き足しになる）
-  function showCached() { if (shown || !cached || !cached.d) return; render(cached.d); shown = true; watch(); if (isTop) prefetch(); }
+  function showCached() { if (shown || !cached || !cached.d || Date.now() - cached.at > FRESH) return; render(cached.d); shown = true; watch(); if (isTop) prefetch(); }
   if (cached && cached.d) { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', showCached); else setTimeout(showCached, 0); }
 
   fetch(API + '?' + params.toString(), { credentials: 'omit', cache: 'no-store' })
     .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
     .then(function (d) {
-      if (!d.ok) { // 合言葉を作り直したあとの古いリンクなど：前の画面の控えは出さない
-        try { localStorage.removeItem(CK); } catch (e) { /* 無視 */ }
+      if (!d.ok) { // 合言葉を作り直したあとの古いリンクなど：前の画面は出さず、この合言葉の控えを全部消す
+        try {
+          var pre = 'conemo:page:' + q.get('key') + '|';
+          for (var i = localStorage.length - 1; i >= 0; i--) { var k = localStorage.key(i); if (k && k.indexOf(pre) === 0) localStorage.removeItem(k); }
+        } catch (e) { /* 無視 */ }
         if (shown) { document.open(); document.write('<!DOCTYPE html><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><p style="font:15px/1.8 sans-serif;padding:24px">' + esc(d.error) + '</p>'); document.close(); }
         else box.innerHTML = '<p>' + esc(d.error) + '</p>';
         return;
@@ -104,6 +108,10 @@ small{color:#5B8DB8}
     })
     .catch(function (e) {
       if (shown) { note('電波がないため、' + ago(cached.at) + ' に開いたときの画面です。入れた数字はスマホに残り、電波が戻ると自動で送られます。'); return; }
+      if (cached && cached.d && Date.now() - cached.at < 7 * 864e5) { // 12時間より前の控えでも、電波がないときは出す
+        render(cached.d, '電波がないため、' + ago(cached.at) + ' に開いたときの画面です。入れた数字はスマホに残り、電波が戻ると自動で送られます。');
+        return;
+      }
       fail('読み込めませんでした。電波を確認して、もう一度お試しください。<br><small>' + esc(e.message) + '</small>');
     });
 
